@@ -1,0 +1,70 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/focal64"
+
+  # Expose ports to the host.
+#  config.vm.network "forwarded_port", guest: 8080, host: 80, host_ip: "127.0.0.1"  # HTTP
+#  config.vm.network "forwarded_port", guest: 4646, host: 4646, host_ip: "127.0.0.1"  # Nomad
+  #
+  config.vm.network "public_network"
+
+  # VM configuration.
+  config.vm.provider "virtualbox" do |vb|
+    vb.customize [ "modifyvm", :id, "--uartmode1", "file", File::NULL ] # https://bugs.launchpad.net/cloud-images/+bug/1874453
+    vb.memory = "4096"
+    vb.cpus = 2
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update
+    apt-get install -y default-jdk
+    echo 'JAVA_HOME="/usr/lib/jvm/java-11-openjdk-amd64"' >> /etc/environment
+    sudo apt-get install -y \
+      apt-transport-https \
+      ca-certificates \
+      curl \
+      gnupg-agent \
+      software-properties-common
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+    sudo add-apt-repository \
+      "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+      $(lsb_release -cs) \
+      stable"
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+    sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+    sudo apt-get update && sudo apt-get install -y consul
+    cat <<'EOF' >> /etc/consul.d/consul.hcl
+server = true
+bootstrap_expect=1
+bind_addr = "{{ GetInterfaceIP `enp0s8` }}"
+EOF
+    sudo systemctl enable consul
+    sudo systemctl start consul
+  SHELL
+
+  config.vm.provision "shell", inline: <<-SHELL
+    mkdir -p /opt/spring-petclinic
+    curl -s -L -o /opt/spring-petclinic/spring-petclinic.jar https://github.com/lgfa29/spring-petclinic/releases/download/v1.0/spring-petclinic-1.0.jar
+    chmod -R +x /opt/spring-petclinic/
+    cat <<EOF > /etc/systemd/system/petclinic.service
+[Unit]
+Description=spring-petclinic
+After=syslog.target
+
+[Service]
+User=vagrant
+ExecStart=java -jar /opt/spring-petclinic/spring-petclinic.jar
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable petclinic
+    systemctl start petclinic
+    modprobe br_netfilter
+  SHELL
+end
